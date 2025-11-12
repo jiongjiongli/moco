@@ -426,7 +426,14 @@ def train_one_epoch(epoch,
                     optimizer,
                     criterion,
                     pbar):
-    model.train()
+    """
+    Switch to eval mode:
+    Under the protocol of linear classification on frozen features/models,
+    it is not legitimate to change any part of the pre-trained model.
+    BatchNorm in train mode may revise running mean/std (even if it receives
+    no gradient), which are part of the model parameters too.
+    """
+    model.eval()
     meters = OrderedDict([
         ("Loss", AverageMeter()),
         ("Acc@1", AverageMeter()),
@@ -564,6 +571,15 @@ transform = transforms.Compose([
         ]
     )
 
+test_transform = transforms.Compose([
+            transforms.Resize(32),
+            transforms.CenterCrop(28),
+            transforms.ToTensor(),
+            normalize,
+        ]
+    )
+
+# MoCo v2's aug
 pretrain_transform = transforms.Compose([
     transforms.RandomResizedCrop(32, scale=(0.2, 1.0)),
     transforms.RandomApply(
@@ -632,7 +648,7 @@ finetune_dataloader = torch.utils.data.DataLoader(finetune_dataset,
 test_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
                                        train=False,
                                        download=True,
-                                       transform=transform)
+                                       transform=test_transform)
 test_dataloader = torch.utils.data.DataLoader(test_dataset,
                                          batch_size=batch_size,
                                          shuffle=False,
@@ -697,13 +713,23 @@ for epoch in pbar:
 
 # Finetune
 model = create_resnet_model(num_classes).to(device)
+
+# freeze all layers but the last linear
+for name, param in model.named_parameters():
+    if name not in ["linear.weight", "linear.bias"]:
+        param.requires_grad = False
+# init the linear layer
+model.linear.weight.data.normal_(mean=0.0, std=0.01)
+model.linear.bias.data.zero_()
+
 state_dict = {key[len("encoder_q."):]: value
         for key, value in moco_model.state_dict().items()
         if (key.startswith("encoder_q")
             and not key.startswith("encoder_q.linear"))
     }
 
-model.load_state_dict(state_dict, strict=False)
+msg = model.load_state_dict(state_dict, strict=False)
+assert set(msg.missing_keys) == {"linear.weight", "linear.bias"}
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
