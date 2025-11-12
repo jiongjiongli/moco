@@ -16,6 +16,22 @@ import torchvision
 import torchvision.transforms as transforms
 import torchvision.models as models
 
+
+def set_seed(seed: int):
+    """
+    Helper function for reproducible behavior to set the seed in `random`, `numpy`, `torch` and/or `tf` (if installed).
+
+    Args:
+        seed (`int`): The seed to set.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # ^^ safe to call this function even if cuda is not available
+
+
 class GaussianBlur:
     """Gaussian blur augmentation in SimCLR https://arxiv.org/abs/2002.05709"""
 
@@ -213,8 +229,9 @@ def create_resnet_model(num_classes):
     resnet_model = ResNet(BasicBlock,
                           [2, 2, 2, 2],
                           num_classes=num_classes,
-                          # norm_layer=nn.BatchNorm2d,
-                          norm_layer=nn.InstanceNorm2d)
+                          norm_layer=nn.BatchNorm2d,
+                          # norm_layer=nn.InstanceNorm2d
+                          )
 
     return resnet_model
 
@@ -425,7 +442,8 @@ def train_one_epoch(epoch,
                     train_dataloader,
                     optimizer,
                     criterion,
-                    pbar):
+                    pbar,
+                    model_eval=False):
     """
     Switch to eval mode:
     Under the protocol of linear classification on frozen features/models,
@@ -433,7 +451,11 @@ def train_one_epoch(epoch,
     BatchNorm in train mode may revise running mean/std (even if it receives
     no gradient), which are part of the model parameters too.
     """
-    model.eval()
+    if model_eval:
+        model.eval()
+    else:
+        model.train()
+
     meters = OrderedDict([
         ("Loss", AverageMeter()),
         ("Acc@1", AverageMeter()),
@@ -552,9 +574,13 @@ def test_one_epoch(epoch,
 
 print("Completed classes and methods definiton")
 
+seed = 17
+set_seed(seed)
+
 data_root_path = "./data"
 # batch_size = 4
 batch_size = 128
+queue_size = batch_size * 100
 epochs = 10
 pretrain_epochs = 10
 finetune_epochs = epochs - pretrain_epochs
@@ -662,6 +688,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Train
+set_seed(seed)
 model = create_resnet_model(num_classes).to(device)
 
 criterion = nn.CrossEntropyLoss()
@@ -691,9 +718,10 @@ for epoch in pbar:
     tqdm.write("")
 
 # Pretrain
+set_seed(seed)
 moco_model = MWEMoco(create_resnet_model,
                      feature_dim=num_classes,
-                     queue_size=batch_size * 100).to(device)
+                     queue_size=queue_size).to(device)
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(moco_model.parameters(), lr=0.1, momentum=0.9)
@@ -712,6 +740,7 @@ for epoch in pbar:
     tqdm.write("")
 
 # Finetune
+set_seed(seed)
 model = create_resnet_model(num_classes).to(device)
 
 # freeze all layers but the last linear
@@ -743,7 +772,8 @@ for epoch in pbar:
                     train_dataloader,
                     optimizer,
                     criterion,
-                    pbar)
+                    pbar,
+                    model_eval=True)
 
     tqdm.write("")
     # model_path = "./cifar_model.pth"
