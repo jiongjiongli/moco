@@ -15,6 +15,7 @@ from torch.utils.data import Subset
 import torchvision
 import torchvision.transforms as transforms
 import torchvision.models as models
+from torchvision.models import resnet50, ResNet
 
 
 def set_seed(seed: int):
@@ -638,19 +639,19 @@ targets = origin_train_dataset.targets
 # Define stratified splitter
 splitter = StratifiedShuffleSplit(
     n_splits=1,     # number of re-shuffles
-    test_size=0.1,  # 10% subset
+    test_size=0.1,
     random_state=17
 )
 
 # Get train and subset indices
-# for pretrain_idx, finetune_idx in splitter.split(np.zeros(len(targets)), targets):
-#     print(len(pretrain_idx), len(finetune_idx))
-#     pretrain_dataset = TransformSubset(origin_train_dataset,
-#                                        pretrain_idx,
-#                                        transform=TwoTransform(pretrain_transform))
-#     finetune_dataset = TransformSubset(origin_train_dataset,
-#                                        finetune_idx,
-#                                        transform=transform)
+for pretrain_idx, finetune_idx in splitter.split(np.zeros(len(targets)), targets):
+    print(len(pretrain_idx), len(finetune_idx))
+    # pretrain_dataset = TransformSubset(origin_train_dataset,
+    #                                    pretrain_idx,
+    #                                    transform=TwoTransform(pretrain_transform))
+    finetune_dataset = TransformSubset(origin_train_dataset,
+                                       finetune_idx,
+                                       transform=transform)
 
 pretrain_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
                                                 train=True,
@@ -662,10 +663,10 @@ pretrain_dataloader = torch.utils.data.DataLoader(pretrain_dataset,
                                                   num_workers=2,
                                                   drop_last=True)
 
-finetune_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
-                                                train=True,
-                                                download=True,
-                                                transform=transform)
+# finetune_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
+#                                                 train=True,
+#                                                 download=True,
+#                                                 transform=transform)
 finetune_dataloader = torch.utils.data.DataLoader(finetune_dataset,
                                                   batch_size=batch_size,
                                                   shuffle=True,
@@ -689,7 +690,8 @@ print(f"Using device: {device}")
 
 # Train
 set_seed(seed)
-model = create_resnet_model(num_classes).to(device)
+# model = create_resnet_model(num_classes).to(device)
+model = resnet50(num_classes=num_classes).to(device)
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
@@ -700,7 +702,7 @@ for epoch in pbar:
     train_one_epoch(epoch,
                     epochs,
                     model,
-                    train_dataloader,
+                    finetune_dataloader,
                     optimizer,
                     criterion,
                     pbar)
@@ -719,7 +721,10 @@ for epoch in pbar:
 
 # Pretrain
 set_seed(seed)
-moco_model = MWEMoco(create_resnet_model,
+# moco_model = MWEMoco(create_resnet_model,
+#                      feature_dim=num_classes,
+#                      queue_size=queue_size).to(device)
+moco_model = MWEMoco(resnet50,
                      feature_dim=num_classes,
                      queue_size=queue_size).to(device)
 
@@ -740,25 +745,41 @@ for epoch in pbar:
     tqdm.write("")
 
 # Finetune
-set_seed(seed)
-model = create_resnet_model(num_classes).to(device)
 
-# freeze all layers but the last linear
-for name, param in model.named_parameters():
-    if name not in ["linear.weight", "linear.bias"]:
-        param.requires_grad = False
+freeze_layers = False
+set_seed(seed)
+# model = create_resnet_model(num_classes).to(device)
+model = resnet50(num_classes=num_classes).to(device)
+
+if isinstance(model, ResNet):
+    linear_weight_names = ["fc.weight", "fc.bias"]
+else:
+    linear_weight_names = ["linear.weight", "linear.bias"]
+
+if freeze_layers:
+    # freeze all layers but the last linear
+    for name, param in model.named_parameters():
+        if name not in linear_weight_names:
+            param.requires_grad = False
+
 # init the linear layer
-model.linear.weight.data.normal_(mean=0.0, std=0.01)
-model.linear.bias.data.zero_()
+
+if isinstance(model, ResNet):
+    model.fc.weight.data.normal_(mean=0.0, std=0.01)
+    model.fc.bias.data.zero_()
+else:
+    model.linear.weight.data.normal_(mean=0.0, std=0.01)
+    model.linear.bias.data.zero_()
 
 state_dict = {key[len("encoder_q."):]: value
         for key, value in moco_model.state_dict().items()
         if (key.startswith("encoder_q")
-            and not key.startswith("encoder_q.linear"))
+            and not key.startswith("encoder_q.linear")
+            )
     }
 
 msg = model.load_state_dict(state_dict, strict=False)
-assert set(msg.missing_keys) == {"linear.weight", "linear.bias"}
+assert set(msg.missing_keys) == set(linear_weight_names)
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
@@ -769,11 +790,11 @@ for epoch in pbar:
     train_one_epoch(epoch,
                     epochs,
                     model,
-                    train_dataloader,
+                    finetune_dataloader,
                     optimizer,
                     criterion,
                     pbar,
-                    model_eval=True)
+                    model_eval=freeze_layers)
 
     tqdm.write("")
     # model_path = "./cifar_model.pth"
