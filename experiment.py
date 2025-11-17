@@ -96,31 +96,36 @@ class_names = test_dataset.classes
 num_classes = len(class_names)
 
 
-launch_train(config, num_classes)
-
+# Train
+device_type = "gpu"
+launch_train(config, device_type, num_classes)
 
 # Pretrain
+device_type = "gpu"
 launch_pretrain(config,
                 device_type,
                 num_classes)
 
 # Finetune
-launch_finetune(seed,
-                device,
-                data_root_path,
-                batch_size,
-                num_workers,
-                num_classes,
-                model_type,
-                finetune_epochs,
-                finetune_learning_rate,
-                finetune_optim_momentum,
-                finetune_snapshot_path,
-                moco_snapshot_path
-             )
+device_type = "gpu"
+launch_finetune(config, device_type, num_classes)
 
 print("Finished!")
 
+
+# Pretrain
+device_type = "cpu"
+config.batch_size = 1
+config.queue_size = batch_size * 1
+launch_pretrain(config,
+                device_type,
+                num_classes)
+
+# Finetune
+device_type = "cpu"
+launch_finetune(config, device_type, num_classes)
+
+print("Finished!")
 
 # acc_infos_list = []
 

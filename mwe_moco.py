@@ -355,7 +355,7 @@ class MWEMoco(nn.Module):
         logits /= self.temperature
 
         # labels: positive key indicators, shape=[B]
-        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
+        labels = torch.zeros(logits.shape[0], dtype=torch.long, device=logits.device)
 
         # dequeue and enqueue positive key features, shape=[B, C]
         self._dequeue_and_enqueue(k)
@@ -909,10 +909,9 @@ def run_pretrain(rank,
         destroy_process_group()
 
 
-def launch_train(config, num_classes):
-    multigpu = config.train_multigpu
-    single_gpu = torch.cuda.is_available()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def launch_train(config, device_type, num_classes):
+    multigpu = device_type == "gpu" and config.finetune_multigpu
+    single_gpu = device_type == "gpu" and torch.cuda.is_available()
     rank = 0 if multigpu else -1
     freeze_layers = config.train_freeze_layers
 
@@ -921,6 +920,13 @@ def launch_train(config, num_classes):
     learning_rate = config.train_learning_rate
     optim_momentum = config.train_optim_momentum
     snapshot_path = config.train_snapshot_path
+
+    assert not multigpu, multigpu
+    if single_gpu:
+        device = torch.device("cuda")
+    else:
+        assert device_type == "cpu", device_type
+        device = torch.device("cpu")
 
     set_seed(config.seed)
     finetune_data = DataManager.create_finetune_data(config)
@@ -985,23 +991,9 @@ def launch_train(config, num_classes):
         tqdm.write("")
 
 
-def launch_finetune(config, num_classes
-                    seed,
-                    device,
-                    data_root_path,
-                    batch_size,
-                    num_workers,
-                    num_classes,
-                    model_type,
-                    epochs,
-                    learning_rate,
-                    optim_momentum,
-                    snapshot_path,
-                    moco_snapshot_path
-                 ):
-    multigpu = config.finetune_multigpu
-    single_gpu = torch.cuda.is_available()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def launch_finetune(config, device_type, num_classes):
+    multigpu = device_type == "gpu" and config.finetune_multigpu
+    single_gpu = device_type == "gpu" and torch.cuda.is_available()
     rank = 0 if multigpu else -1
     freeze_layers = config.finetune_freeze_layers
 
@@ -1010,6 +1002,13 @@ def launch_finetune(config, num_classes
     learning_rate = config.finetune_learning_rate
     optim_momentum = config.finetune_optim_momentum
     snapshot_path = config.finetune_snapshot_path
+
+    assert not multigpu, multigpu
+    if single_gpu:
+        device = torch.device("cuda")
+    else:
+        assert device_type == "cpu", device_type
+        device = torch.device("cpu")
 
     set_seed(config.seed)
     finetune_data = DataManager.create_finetune_data(config)
