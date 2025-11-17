@@ -1,31 +1,23 @@
-from collections import OrderedDict
 from pathlib import Path
-import random
-from tqdm import tqdm
-from typing import Union, Optional, Callable, List, Type
-from PIL import ImageFilter
-import numpy as np
-from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.metrics import accuracy_score
+
 import torch
-from torch import Tensor
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Subset
-import torchvision
-import torchvision.transforms as transforms
-import torchvision.models as models
-from torchvision.models import resnet50
-import torch.multiprocessing as mp
-from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
 
-from mwe_moco import (set_seed,
-                      create_test_data,
-                      run_pretrain,
-                      launch_train,
-                      launch_finetune)
+import torchvision
+from torchvision.models import resnet50
+
+from PIL import ImageFilter  # remove if not used
+# If ImageFilter is unused in mwe_moco, delete this line.
+
+from mwe_moco import (
+    set_seed,
+    create_test_data,
+    run_pretrain,
+    launch_train,
+    launch_finetune
+)
 
 
 def launch_pretrain(data_root_path,
