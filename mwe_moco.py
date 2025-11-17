@@ -454,37 +454,6 @@ class MWEMoco(nn.Module):
         self.queue_head_idx[0] = queue_head_idx
 
 
-
-@torch.no_grad()
-def topk_correct_counts(output, target, topk=(1, 5)):
-    """
-    Computes the number of correct predictions for each top-k and batch size.
-
-    Args:
-        output: logits or probabilities, shape [batch_size, num_classes]
-        target: ground-truth labels, shape [batch_size]
-        topk: tuple of k values, e.g. (1, 5)
-
-    Returns:
-        correct_counts: list of number of correct predictions per k
-    """
-    maxk = max(topk)
-
-    # pred, shape=[B, maxk]
-    _, pred = output.topk(maxk, dim=1, largest=True, sorted=True)
-    # pred, shape: [maxk, B]
-    pred = pred.t()
-    # correct, shape: [maxk, B]
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        # correct_k, shape: [1]
-        correct_k = correct[:k].reshape(-1).float().sum(dim=0)
-        res.append(int(correct_k))
-    return res
-
-
 def create_encoder(moco_model_state_dict,
                    model_type,
                    device,
@@ -519,157 +488,166 @@ def create_encoder(moco_model_state_dict,
     return model
 
 
-def create_train_data(data_root_path,
-                            batch_size,
-                            num_workers):
-    train_transform = transforms.Compose([
-                transforms.RandomResizedCrop(32),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
+class DataManager:
+    @staticmethod
+    def create_train_data(config):
+        data_root_path = config.data_root_path
+        batch_size = config.batch_size
+        num_workers = config.num_workers
 
-    train_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
-                                                 train=True,
-                                                 download=True,
-                                                 transform=train_transform)
+        train_transform = transforms.Compose([
+                    transforms.RandomResizedCrop(32),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor(),
+                    normalize,
+                ]
+            )
 
-    train_dataloader = torch.utils.data.DataLoader(train_dataset,
-                                                   batch_size=batch_size,
-                                                   shuffle=True,
-                                                   num_workers=num_workers)
+        train_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
+                                                     train=True,
+                                                     download=True,
+                                                     transform=train_transform)
 
-    data = {
-        "dataset": train_dataset,
-        "dataloader": train_dataloader
-    }
+        train_dataloader = torch.utils.data.DataLoader(train_dataset,
+                                                       batch_size=batch_size,
+                                                       shuffle=True,
+                                                       num_workers=num_workers)
 
-    return data
+        data = {
+            "dataset": train_dataset,
+            "dataloader": train_dataloader
+        }
 
+        return data
 
-def create_pretrain_data(data_root_path,
-                               batch_size,
-                               multigpu,
-                               num_workers):
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    @staticmethod
+    def create_pretrain_data(config, multigpu):
+        data_root_path = config.data_root_path
+        batch_size = config.batch_size
+        num_workers = config.num_workers
 
-    # MoCo v2's aug
-    pretrain_transform = transforms.Compose([
-        transforms.RandomResizedCrop(32, scale=(0.2, 1.0)),
-        transforms.RandomApply(
-            [transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)],
-            p=0.8,
-        ),
-        transforms.RandomGrayscale(p=0.2),
-        transforms.RandomApply(
-            [GaussianBlur([0.1, 2.0])],
-            p=0.5,
-        ),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        normalize,
-        ])
-    pretrain_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
-                                                    train=True,
-                                                    download=True,
-                                                    transform=TwoTransform(pretrain_transform))
-    sampler = DistributedSampler(pretrain_dataset) if multigpu else None
-    pretrain_dataloader = torch.utils.data.DataLoader(pretrain_dataset,
-                                                      batch_size=batch_size,
-                                                      shuffle=not multigpu,
-                                                      sampler=sampler,
-                                                      num_workers=num_workers,
-                                                      drop_last=True)
-    data = {
-        "dataset": pretrain_dataset,
-        "dataloader": pretrain_dataloader
-    }
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
 
-    return data
-
-
-def create_finetune_data(data_root_path,
-                               batch_size,
-                               num_workers):
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    transform = transforms.Compose([
-                transforms.RandomResizedCrop(32),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                normalize,
-            ]
-        )
-
-    origin_train_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
+        # MoCo v2's aug
+        pretrain_transform = transforms.Compose([
+            transforms.RandomResizedCrop(32, scale=(0.2, 1.0)),
+            transforms.RandomApply(
+                [transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)],
+                p=0.8,
+            ),
+            transforms.RandomGrayscale(p=0.2),
+            transforms.RandomApply(
+                [GaussianBlur([0.1, 2.0])],
+                p=0.5,
+            ),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+            ])
+        pretrain_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
                                                         train=True,
-                                                        download=True)
-    targets = origin_train_dataset.targets
-    # Define stratified splitter
-    splitter = StratifiedShuffleSplit(
-        n_splits=1,     # number of re-shuffles
-        test_size=0.01,
-        random_state=17
-    )
+                                                        download=True,
+                                                        transform=TwoTransform(pretrain_transform))
+        sampler = DistributedSampler(pretrain_dataset) if multigpu else None
+        pretrain_dataloader = torch.utils.data.DataLoader(pretrain_dataset,
+                                                          batch_size=batch_size,
+                                                          shuffle=not multigpu,
+                                                          sampler=sampler,
+                                                          num_workers=num_workers,
+                                                          drop_last=True)
+        data = {
+            "dataset": pretrain_dataset,
+            "dataloader": pretrain_dataloader
+        }
 
-    # Get train and subset indices
-    for pretrain_idx, finetune_idx in splitter.split(np.zeros(len(targets)), targets):
-        print(len(pretrain_idx), len(finetune_idx))
-        # pretrain_dataset = TransformSubset(origin_train_dataset,
-        #                                    pretrain_idx,
-        #                                    transform=TwoTransform(pretrain_transform))
-        finetune_dataset = TransformSubset(origin_train_dataset,
-                                           finetune_idx,
-                                           transform=transform)
+        return data
 
-    # finetune_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
-    #                                                 train=True,
-    #                                                 download=True,
-    #                                                 transform=transform)
-    finetune_dataloader = torch.utils.data.DataLoader(finetune_dataset,
-                                                      batch_size=batch_size,
-                                                      shuffle=True,
-                                                      num_workers=num_workers)
-    data = {
-        "dataset": finetune_dataset,
-        "dataloader": finetune_dataloader
-    }
+    @staticmethod
+    def create_finetune_data(config):
+        data_root_path = config.data_root_path
+        batch_size = config.batch_size
+        num_workers = config.num_workers
 
-    return data
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
 
+        transform = transforms.Compose([
+                    transforms.RandomResizedCrop(32),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor(),
+                    normalize,
+                ]
+            )
 
-def create_test_data(data_root_path,
-                           batch_size,
-                           num_workers):
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    test_transform = transforms.Compose([
-                transforms.Resize(32),
-                transforms.CenterCrop(28),
-                transforms.ToTensor(),
-                normalize,
-            ]
+        origin_train_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
+                                                            train=True,
+                                                            download=True)
+        targets = origin_train_dataset.targets
+        # Define stratified splitter
+        splitter = StratifiedShuffleSplit(
+            n_splits=1,     # number of re-shuffles
+            test_size=0.01,
+            random_state=17
         )
 
-    test_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
-                                           train=False,
-                                           download=True,
-                                           transform=test_transform)
-    test_dataloader = torch.utils.data.DataLoader(test_dataset,
-                                             batch_size=batch_size,
-                                             shuffle=False,
-                                             num_workers=num_workers)
+        # Get train and subset indices
+        for pretrain_idx, finetune_idx in splitter.split(np.zeros(len(targets)), targets):
+            print(len(pretrain_idx), len(finetune_idx))
+            # pretrain_dataset = TransformSubset(origin_train_dataset,
+            #                                    pretrain_idx,
+            #                                    transform=TwoTransform(pretrain_transform))
+            finetune_dataset = TransformSubset(origin_train_dataset,
+                                               finetune_idx,
+                                               transform=transform)
 
-    data = {
-        "dataset": test_dataset,
-        "dataloader": test_dataloader
-    }
+        # finetune_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
+        #                                                 train=True,
+        #                                                 download=True,
+        #                                                 transform=transform)
+        finetune_dataloader = torch.utils.data.DataLoader(finetune_dataset,
+                                                          batch_size=batch_size,
+                                                          shuffle=True,
+                                                          num_workers=num_workers)
+        data = {
+            "dataset": finetune_dataset,
+            "dataloader": finetune_dataloader
+        }
 
-    return data
+        return data
+
+
+    def create_test_data(config):
+        data_root_path = config.data_root_path
+        batch_size = config.batch_size
+        num_workers = config.num_workers
+
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+
+        test_transform = transforms.Compose([
+                    transforms.Resize(32),
+                    transforms.CenterCrop(28),
+                    transforms.ToTensor(),
+                    normalize,
+                ]
+            )
+
+        test_dataset = torchvision.datasets.CIFAR10(root=data_root_path,
+                                               train=False,
+                                               download=True,
+                                               transform=test_transform)
+        test_dataloader = torch.utils.data.DataLoader(test_dataset,
+                                                 batch_size=batch_size,
+                                                 shuffle=False,
+                                                 num_workers=num_workers)
+
+        data = {
+            "dataset": test_dataset,
+            "dataloader": test_dataloader
+        }
+
+        return data
 
 
 def load_snapshot(snapshot_path, device):
@@ -682,6 +660,7 @@ def load_snapshot(snapshot_path, device):
 
 def save_snapshot(rank,
                   multigpu,
+                  single_gpu,
                   epoch,
                   epochs,
                   model,
@@ -696,297 +675,15 @@ def save_snapshot(rank,
     }
 
     torch.save(snapshot, snapshot_path)
-    prefix = f"[GPU {rank}]" if multigpu else ""
-    print(f"{prefix} Epoch {epoch}/{epochs} | Snapshot saved at {snapshot_path}")
-
-
-
-def run_pretrain(rank,
-                 world_size,
-                 seed,
-                 data_root_path,
-                 batch_size,
-                 num_workers,
-                 num_classes,
-                 model_type,
-                 queue_size,
-                 epochs,
-                 learning_rate,
-                 optim_momentum,
-                 save_every,
-                 snapshot_path):
-    multigpu = world_size > 1
 
     if multigpu:
-        ddp_setup(rank, world_size)
-
-    set_seed(seed)
-
-    pretrain_data = create_pretrain_data(data_root_path,
-                                                     batch_size,
-                                                     multigpu,
-                                                     num_workers)
-    pretrain_dataloader = pretrain_data["dataloader"]
-    # moco_model = MWEMoco(create_resnet_model,
-    #                      feature_dim=num_classes,
-    #                      queue_size=queue_size)
-    moco_model = MWEMoco(lambda num_classes: create_resnet_model(model_type, num_classes),
-                         feature_dim=num_classes,
-                         queue_size=queue_size)
-
-    if multigpu:
-        moco_model = moco_model.to(rank)
-        moco_model = DDP(moco_model, device_ids=[rank])
+        prefix = f"[GPU {rank}]"
+    elif single_gpu:
+        prefix = f"[GPU]"
     else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        moco_model = moco_model.to(device)
+        prefix = f"[CPU]"
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(moco_model.parameters(),
-                          lr=learning_rate, momentum=optim_momentum)
-
-    pbar = tqdm(range(epochs))
-
-    if multigpu:
-        pbar.set_description(f"[GPU {rank}]")
-
-    for epoch in pbar:
-        pretrain_one_epoch(epoch,
-                           epochs,
-                           moco_model,
-                           pretrain_dataloader,
-                           optimizer,
-                           criterion,
-                           pbar)
-
-        tqdm.write("")
-
-        if rank == 0 and (epoch == 0 or ((epoch + 1) % save_every == 0)):
-            save_snapshot(rank,
-                          multigpu,
-                          epoch + 1,
-                          epochs,
-                          moco_model,
-                          optimizer,
-                          snapshot_path)
-
-    if multigpu:
-        destroy_process_group()
-
-
-
-def launch_train(seed,
-                 device,
-                 data_root_path,
-                 batch_size,
-                 num_workers,
-                 num_classes,
-                 model_type,
-                 epochs,
-                 learning_rate,
-                 optim_momentum,
-                 snapshot_path,
-                 ):
-    rank = 0
-    multigpu = False
-    freeze_layers = False
-
-    set_seed(seed)
-    finetune_data = create_finetune_data(data_root_path,
-                                         batch_size,
-                                         num_workers)
-    finetune_dataset = finetune_data["dataset"]
-    finetune_dataloader = finetune_data["dataloader"]
-
-    test_data = create_test_data(data_root_path,
-                                   batch_size,
-                                   num_workers)
-    test_dataset = test_data["dataset"]
-    test_dataloader = test_data["dataloader"]
-
-    model = create_encoder(None,
-                           model_type,
-                           device,
-                           num_classes,
-                           freeze_layers)
-    test_model = create_encoder(None,
-                                model_type,
-                                device,
-                                num_classes,
-                                freeze_layers)
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(),
-                          lr=learning_rate,
-                          momentum=optim_momentum)
-
-    pbar = tqdm(range(epochs))
-
-    for epoch in pbar:
-        train_one_epoch(epoch,
-                        epochs,
-                        model,
-                        finetune_dataloader,
-                        optimizer,
-                        criterion,
-                        pbar)
-
-        tqdm.write("")
-
-        save_snapshot(rank,
-                      multigpu,
-                      epoch + 1,
-                      epochs,
-                      model,
-                      optimizer,
-                      snapshot_path)
-
-        # model_path = "./cifar_model.pth"
-        # torch.save(model.state_dict(), model_path)
-        model_state_dict = load_snapshot(snapshot_path, device)
-        msg = test_model.load_state_dict(model_state_dict, strict=True)
-        assert not msg.missing_keys, msg
-        test_meters = test_one_epoch(epoch,
-                                     epochs,
-                                     test_model,
-                                     test_dataloader,
-                                     criterion,
-                                     pbar)
-
-        tqdm.write("")
-
-
-def launch_finetune(seed,
-                    device,
-                    data_root_path,
-                    batch_size,
-                    num_workers,
-                    num_classes,
-                    model_type,
-                    epochs,
-                    learning_rate,
-                    optim_momentum,
-                    snapshot_path,
-                    moco_snapshot_path
-                 ):
-    rank = 0
-    multigpu = False
-    freeze_layers = False
-
-    set_seed(seed)
-    finetune_data = create_finetune_data(data_root_path,
-                                         batch_size,
-                                         num_workers)
-    finetune_dataset = finetune_data["dataset"]
-    finetune_dataloader = finetune_data["dataloader"]
-
-    test_data = create_test_data(data_root_path,
-                                   batch_size,
-                                   num_workers)
-    test_dataset = test_data["dataset"]
-    test_dataloader = test_data["dataloader"]
-
-    moco_model_state_dict = load_snapshot(moco_snapshot_path, device)
-
-    model = create_encoder(moco_model_state_dict,
-                           model_type,
-                           device,
-                           num_classes,
-                           freeze_layers)
-    test_model = create_encoder(None,
-                                model_type,
-                                device,
-                                num_classes,
-                                freeze_layers)
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(),
-                          lr=learning_rate,
-                          momentum=optim_momentum)
-
-    pbar = tqdm(range(epochs))
-
-    for epoch in pbar:
-        train_one_epoch(epoch,
-                        epochs,
-                        model,
-                        finetune_dataloader,
-                        optimizer,
-                        criterion,
-                        pbar)
-
-        tqdm.write("")
-
-        save_snapshot(rank,
-                      multigpu,
-                      epoch + 1,
-                      epochs,
-                      model,
-                      optimizer,
-                      snapshot_path)
-
-        # model_path = "./cifar_model.pth"
-        # torch.save(model.state_dict(), model_path)
-        model_state_dict = load_snapshot(snapshot_path, device)
-        msg = test_model.load_state_dict(model_state_dict, strict=True)
-        assert not msg.missing_keys, msg
-        test_meters = test_one_epoch(epoch,
-                                     epochs,
-                                     test_model,
-                                     test_dataloader,
-                                     criterion,
-                                     pbar)
-
-        tqdm.write("")
-
-
-class AverageMeter:
-    """Computes and stores the average and current value"""
-
-    def __init__(self):
-        self.sum = 0.0
-        self.count = 0
-        self.avg = 0.0
-
-    def update(self, val, n: int = 1):
-        self.sum += val
-        self.count += n
-        self.avg = self.sum / self.count
-
-
-def update_metrics(mode,
-                   epoch,
-                   epochs,
-                   step,
-                   steps,
-                   outputs,
-                   labels,
-                   loss,
-                   meters,
-                   pbar=None):
-    correct1, correct5 = topk_correct_counts(outputs,
-                                             labels,
-                                             topk=(1, 5))
-    batch_size = labels.shape[0]
-
-    losses = meters["Loss"]
-    top1 = meters["Acc@1"]
-    top5 = meters["Acc@5"]
-    losses.update(loss.item())
-    top1.update(correct1, batch_size)
-    top5.update(correct5, batch_size)
-
-    # pbar.set_description(f"[{epoch + 1}, {step + 1:05d}]")
-    metrics = OrderedDict([
-            (f"{mode} Epoch", f"{epoch + 1:02d}/{epochs:02d}"),
-            ("Step", f"{step + 1:05d}/{steps:05d}"),
-            ("Loss", f"{losses.avg:.3f}"),
-            ("Acc@1", f"{top1.avg:.2%}"),
-            ("Acc@5", f"{top5.avg:.2%}"),
-        ])
-
-    if pbar:
-        pbar.set_postfix(metrics)
+    print(f"{prefix} Epoch {epoch}/{epochs} | Snapshot saved at {snapshot_path}")
 
 
 def train_one_epoch(epoch,
@@ -1133,6 +830,327 @@ def test_one_epoch(epoch,
     return meters
 
 
-# print("Completed classes and methods definiton")
+def run_pretrain(rank,
+                 world_size,
+                 config,
+                 device_type,
+                 num_classes):
+    multigpu = device_type == "gpu" and world_size > 1
+    single_gpu = device_type == "gpu" and torch.cuda.is_available()
+
+    model_type = config.model_type
+    queue_size = config.queue_size
+
+    epochs = config.pretrain_epochs
+    learning_rate = config.pretrain_learning_rate
+    optim_momentum = config.pretrain_optim_momentum
+    save_every = config.save_every
+    snapshot_path = config.pretrain_snapshot_path
+
+    if multigpu:
+        ddp_setup(rank, world_size)
+
+    set_seed(config.seed)
+
+    pretrain_data = DataManager.create_pretrain_data(config, multigpu)
+    pretrain_dataloader = pretrain_data["dataloader"]
+    # moco_model = MWEMoco(create_resnet_model,
+    #                      feature_dim=num_classes,
+    #                      queue_size=queue_size)
+    moco_model = MWEMoco(lambda num_classes: create_resnet_model(model_type, num_classes),
+                         feature_dim=num_classes,
+                         queue_size=queue_size)
+
+    if multigpu:
+        moco_model = moco_model.to(rank)
+        moco_model = DDP(moco_model, device_ids=[rank])
+    elif single_gpu:
+        device = torch.device("cuda")
+        moco_model = moco_model.to(device)
+    else:
+        assert device_type == "cpu", device_type
+        device = torch.device("cpu")
+        moco_model = moco_model.to(device)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(moco_model.parameters(),
+                          lr=learning_rate, momentum=optim_momentum)
+
+    pbar = tqdm(range(epochs))
+
+    if multigpu:
+        pbar.set_description(f"[GPU {rank}]")
+    elif single_gpu:
+        pbar.set_description(f"[GPU]")
+
+    for epoch in pbar:
+        pretrain_one_epoch(epoch,
+                           epochs,
+                           moco_model,
+                           pretrain_dataloader,
+                           optimizer,
+                           criterion,
+                           pbar)
+
+        tqdm.write("")
+
+        if (((multigpu and rank == 0) or not multigpu)
+            and (epoch == 0 or ((epoch + 1) % save_every == 0))):
+            save_snapshot(rank,
+                          multigpu,
+                          single_gpu,
+                          epoch + 1,
+                          epochs,
+                          moco_model,
+                          optimizer,
+                          snapshot_path)
+
+    if multigpu:
+        destroy_process_group()
 
 
+def launch_train(config, num_classes):
+    multigpu = config.train_multigpu
+    single_gpu = torch.cuda.is_available()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    rank = 0 if multigpu else -1
+    freeze_layers = config.train_freeze_layers
+
+    model_type = config.model_type
+    epochs = config.train_epochs
+    learning_rate = config.train_learning_rate
+    optim_momentum = config.train_optim_momentum
+    snapshot_path = config.train_snapshot_path
+
+    set_seed(config.seed)
+    finetune_data = DataManager.create_finetune_data(config)
+    finetune_dataset = finetune_data["dataset"]
+    finetune_dataloader = finetune_data["dataloader"]
+
+    test_data = DataManager.create_test_data(config)
+    test_dataset = test_data["dataset"]
+    test_dataloader = test_data["dataloader"]
+
+    model = create_encoder(None,
+                           model_type,
+                           device,
+                           num_classes,
+                           freeze_layers)
+    test_model = create_encoder(None,
+                                model_type,
+                                device,
+                                num_classes,
+                                freeze_layers)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(),
+                          lr=learning_rate,
+                          momentum=optim_momentum)
+
+    pbar = tqdm(range(epochs))
+
+    for epoch in pbar:
+        train_one_epoch(epoch,
+                        epochs,
+                        model,
+                        finetune_dataloader,
+                        optimizer,
+                        criterion,
+                        pbar)
+
+        tqdm.write("")
+
+        save_snapshot(rank,
+                      multigpu,
+                      single_gpu,
+                      epoch + 1,
+                      epochs,
+                      model,
+                      optimizer,
+                      snapshot_path)
+
+        # model_path = "./cifar_model.pth"
+        # torch.save(model.state_dict(), model_path)
+        model_state_dict = load_snapshot(snapshot_path, device)
+        msg = test_model.load_state_dict(model_state_dict, strict=True)
+        assert not msg.missing_keys, msg
+
+        test_meters = test_one_epoch(epoch,
+                                     epochs,
+                                     test_model,
+                                     test_dataloader,
+                                     criterion,
+                                     pbar)
+
+        tqdm.write("")
+
+
+def launch_finetune(config, num_classes
+                    seed,
+                    device,
+                    data_root_path,
+                    batch_size,
+                    num_workers,
+                    num_classes,
+                    model_type,
+                    epochs,
+                    learning_rate,
+                    optim_momentum,
+                    snapshot_path,
+                    moco_snapshot_path
+                 ):
+    multigpu = config.finetune_multigpu
+    single_gpu = torch.cuda.is_available()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    rank = 0 if multigpu else -1
+    freeze_layers = config.finetune_freeze_layers
+
+    model_type = config.model_type
+    epochs = config.finetune_epochs
+    learning_rate = config.finetune_learning_rate
+    optim_momentum = config.finetune_optim_momentum
+    snapshot_path = config.finetune_snapshot_path
+
+    set_seed(config.seed)
+    finetune_data = DataManager.create_finetune_data(config)
+    finetune_dataset = finetune_data["dataset"]
+    finetune_dataloader = finetune_data["dataloader"]
+
+    test_data = DataManager.create_test_data(data_root_path,
+                                   batch_size,
+                                   num_workers)
+    test_dataset = test_data["dataset"]
+    test_dataloader = test_data["dataloader"]
+
+    moco_model_state_dict = load_snapshot(moco_snapshot_path, device)
+
+    model = create_encoder(moco_model_state_dict,
+                           model_type,
+                           device,
+                           num_classes,
+                           freeze_layers)
+    test_model = create_encoder(None,
+                                model_type,
+                                device,
+                                num_classes,
+                                freeze_layers)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(),
+                          lr=learning_rate,
+                          momentum=optim_momentum)
+
+    pbar = tqdm(range(epochs))
+
+    for epoch in pbar:
+        train_one_epoch(epoch,
+                        epochs,
+                        model,
+                        finetune_dataloader,
+                        optimizer,
+                        criterion,
+                        pbar)
+
+        tqdm.write("")
+
+        save_snapshot(rank,
+                      multigpu,
+                      single_gpu,
+                      epoch + 1,
+                      epochs,
+                      model,
+                      optimizer,
+                      snapshot_path)
+
+        # model_path = "./cifar_model.pth"
+        # torch.save(model.state_dict(), model_path)
+        model_state_dict = load_snapshot(snapshot_path, device)
+        msg = test_model.load_state_dict(model_state_dict, strict=True)
+        assert not msg.missing_keys, msg
+        test_meters = test_one_epoch(epoch,
+                                     epochs,
+                                     test_model,
+                                     test_dataloader,
+                                     criterion,
+                                     pbar)
+
+        tqdm.write("")
+
+
+@torch.no_grad()
+def topk_correct_counts(output, target, topk=(1, 5)):
+    """
+    Computes the number of correct predictions for each top-k and batch size.
+
+    Args:
+        output: logits or probabilities, shape [batch_size, num_classes]
+        target: ground-truth labels, shape [batch_size]
+        topk: tuple of k values, e.g. (1, 5)
+
+    Returns:
+        correct_counts: list of number of correct predictions per k
+    """
+    maxk = max(topk)
+
+    # pred, shape=[B, maxk]
+    _, pred = output.topk(maxk, dim=1, largest=True, sorted=True)
+    # pred, shape: [maxk, B]
+    pred = pred.t()
+    # correct, shape: [maxk, B]
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+    res = []
+    for k in topk:
+        # correct_k, shape: [1]
+        correct_k = correct[:k].reshape(-1).float().sum(dim=0)
+        res.append(int(correct_k))
+    return res
+
+
+class AverageMeter:
+    """Computes and stores the average and current value"""
+
+    def __init__(self):
+        self.sum = 0.0
+        self.count = 0
+        self.avg = 0.0
+
+    def update(self, val, n: int = 1):
+        self.sum += val
+        self.count += n
+        self.avg = self.sum / self.count
+
+
+def update_metrics(mode,
+                   epoch,
+                   epochs,
+                   step,
+                   steps,
+                   outputs,
+                   labels,
+                   loss,
+                   meters,
+                   pbar=None):
+    correct1, correct5 = topk_correct_counts(outputs,
+                                             labels,
+                                             topk=(1, 5))
+    batch_size = labels.shape[0]
+
+    losses = meters["Loss"]
+    top1 = meters["Acc@1"]
+    top5 = meters["Acc@5"]
+    losses.update(loss.item())
+    top1.update(correct1, batch_size)
+    top5.update(correct5, batch_size)
+
+    # pbar.set_description(f"[{epoch + 1}, {step + 1:05d}]")
+    metrics = OrderedDict([
+            (f"{mode} Epoch", f"{epoch + 1:02d}/{epochs:02d}"),
+            ("Step", f"{step + 1:05d}/{steps:05d}"),
+            ("Loss", f"{losses.avg:.3f}"),
+            ("Acc@1", f"{top1.avg:.2%}"),
+            ("Acc@5", f"{top5.avg:.2%}"),
+        ])
+
+    if pbar:
+        pbar.set_postfix(metrics)

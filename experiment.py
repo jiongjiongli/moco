@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 import torch.multiprocessing as mp
@@ -13,79 +14,81 @@ from PIL import ImageFilter  # remove if not used
 
 from mwe_moco import (
     set_seed,
-    create_test_data,
+    DataManager,
     run_pretrain,
     launch_train,
     launch_finetune
 )
 
 
-def launch_pretrain(data_root_path,
-                    batch_size,
-                    num_workers,
-                    num_classes,
-                    model_type,
-                    queue_size,
-                    epochs,
-                    learning_rate,
-                    optim_momentum,
-                    save_every,
-                    moco_snapshot_path):
+def launch_pretrain(config,
+                    device_type,
+                    num_classes):
     world_size = torch.cuda.device_count()
     print(f"world_size: {world_size}")
+    multigpu = device_type == "gpu" and world_size > 1
+    rank = 0 if multigpu else -1
 
-    if world_size > 1:
+    if multigpu:
         mp.spawn(run_pretrain,
                  args=(world_size,
-                       seed,
-                       data_root_path,
-                       batch_size,
-                       num_workers,
-                       num_classes,
-                       model_type,
-                       queue_size,
-                       epochs,
-                       learning_rate,
-                       optim_momentum,
-                       save_every,
-                       moco_snapshot_path),
+                       config,
+                       device_type,
+                       num_classes),
                  nprocs=world_size)
     else:
-        run_pretrain(0,
+        run_pretrain(rank,
                      world_size,
-                     seed,
-                     data_root_path,
-                     batch_size,
-                     num_workers,
-                     num_classes,
-                     model_type,
-                     queue_size,
-                     epochs,
-                     learning_rate,
-                     optim_momentum,
-                     save_every,
-                     moco_snapshot_path)
+                     config,
+                     device_type,
+                     num_classes)
 
 
 # Config
-seed = 17
-set_seed(seed)
-
-data_root_path = "./data"
 # batch_size = 4
 batch_size = 128
-num_workers = 2
-queue_size = batch_size * 100
-train_epochs = 5
-pretrain_epochs = 5
-finetune_epochs = 5
+config_dict = dict(
+    seed = 17,
 
-world_size = torch.cuda.device_count()
-multigpu = world_size > 1
+    # Data
+    data_root_path = "./data",
+    batch_size = batch_size,
+    num_workers = 2,
 
-test_data = create_test_data(data_root_path,
-                                   batch_size,
-                                   num_workers)
+    # Pretrain
+    queue_size = batch_size * 100,
+    pretrain_epochs = 5,
+    # device_type = "gpu",
+    pretrain_learning_rate = 0.01,
+    pretrain_optim_momentum = 0.9,
+    save_every = 1,
+    pretrain_snapshot_path = "moco_weights.pth",
+
+    # Train
+    train_epochs = 5,
+    train_learning_rate = 0.01,
+    train_optim_momentum = 0.9,
+    train_snapshot_path = "train_weights.pth",
+    train_freeze_layers = False,
+    train_multigpu = False,
+
+    # Finetune
+    finetune_epochs = 5,
+    finetune_learning_rate = 0.01,
+    finetune_optim_momentum = 0.9,
+    finetune_snapshot_path = "finetune_weights.pth",
+    finetune_freeze_layers = False,
+    finetune_multigpu = False,
+
+    # Model
+    model_type = "resnet50",
+)
+
+config = SimpleNamespace(**config_dict)
+
+set_seed(config.seed)
+
+test_data = DataManager.create_test_data(config)
 test_dataset = test_data["dataset"]
 test_dataloader = test_data["dataloader"]
 
@@ -93,53 +96,15 @@ class_names = test_dataset.classes
 num_classes = len(class_names)
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-model_type = "resnet50"
-
-# Train
-train_learning_rate = 0.01
-train_optim_momentum = 0.9
-train_snapshot_path = "train_weights.pth"
-
-launch_train(seed,
-             device,
-             data_root_path,
-             batch_size,
-             num_workers,
-             num_classes,
-             model_type,
-             train_epochs,
-             train_learning_rate,
-             train_optim_momentum,
-             train_snapshot_path
-             )
+launch_train(config, num_classes)
 
 
 # Pretrain
-pretrain_learning_rate = 0.01
-pretrain_optim_momentum = 0.9
-save_every = 1
-moco_snapshot_path = "moco_weights.pth"
-
-launch_pretrain(data_root_path,
-                batch_size,
-                num_workers,
-                num_classes,
-                model_type,
-                queue_size,
-                pretrain_epochs,
-                pretrain_learning_rate,
-                pretrain_optim_momentum,
-                save_every,
-                moco_snapshot_path)
+launch_pretrain(config,
+                device_type,
+                num_classes)
 
 # Finetune
-finetune_learning_rate = 0.01
-finetune_optim_momentum = 0.9
-finetune_snapshot_path = "finetune_weights.pth"
-
 launch_finetune(seed,
                 device,
                 data_root_path,
