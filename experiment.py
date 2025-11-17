@@ -67,7 +67,7 @@ def launch_pretrain(data_root_path,
                      moco_snapshot_path)
 
 
-
+# Config
 seed = 17
 set_seed(seed)
 

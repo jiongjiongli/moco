@@ -696,7 +696,8 @@ def save_snapshot(rank,
     }
 
     torch.save(snapshot, snapshot_path)
-    print(f"[GPU {rank}] Epoch {epoch}/{epochs} | Training snapshot saved at {snapshot_path}")
+    prefix = f"[GPU {rank}]" if multigpu else ""
+    print(f"{prefix} Epoch {epoch}/{epochs} | Snapshot saved at {snapshot_path}")
 
 
 
@@ -745,6 +746,9 @@ def run_pretrain(rank,
                           lr=learning_rate, momentum=optim_momentum)
 
     pbar = tqdm(range(epochs))
+
+    if multigpu:
+        pbar.set_description(f"[GPU {rank}]")
 
     for epoch in pbar:
         pretrain_one_epoch(epoch,
