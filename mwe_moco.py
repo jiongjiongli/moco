@@ -7,6 +7,8 @@ import random
 from tqdm import tqdm
 from typing import Union, Optional, Callable, List, Type
 from PIL import ImageFilter
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator, FuncFormatter
 import numpy as np
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.metrics import accuracy_score
@@ -67,6 +69,100 @@ def concat_all_gather(tensor):
 
     output = torch.cat(tensors_gather, dim=0)
     return output
+
+
+def plot_pretrain_metrics(metrics_list, title):
+    epochs = list(range(1, len(metrics_list) + 1))
+
+    train_loss = [metrics['pretrain_Loss'] for metrics in metrics_list]
+    train_acc1 = [metrics['pretrain_Acc@1'] for metrics in metrics_list]
+    train_acc5 = [metrics['pretrain_Acc@5'] for metrics in metrics_list]
+
+    # ---- Plot ----
+    plt.figure(figsize=(12, 5))
+
+    # Loss subplot
+    ax1 = plt.subplot(1, 2, 1)
+    ax1.plot(epochs, train_loss, marker='o', label="Pretrain Loss")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax1.set_title("Training Loss")
+    ax1.legend()
+    ax1.grid(True)
+    ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    # Accuracy subplot
+    ax2 = plt.subplot(1, 2, 2)
+    ax2.plot(epochs, train_acc1, marker='o', label="Pretrain Top-1")
+    ax2.plot(epochs, train_acc5, marker='o', label="Pretrain Top-5")
+
+    # Formatter to show % symbol
+    percent_fmt = FuncFormatter(lambda y, _: f"{y:.1%}")
+    ax2.yaxis.set_major_formatter(percent_fmt)  # show as %
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Accuracy (%)")
+    ax2.set_title("Pretrain Accuracy")
+    ax2.legend()
+    ax2.grid(True)
+    # x integer ticks
+    ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    plt.suptitle(title, fontsize=16)
+
+    plt.tight_layout()
+
+    image_file_path = f"{title}.png"
+    plt.savefig(image_file_path, dpi=300, bbox_inches="tight")
+
+    # plt.show()
+
+
+def plot_metrics(metrics_list, title):
+    epochs = list(range(1, len(metrics_list) + 1))
+
+    train_loss = [metrics['train_Loss'] for metrics in metrics_list]
+    test_loss = [metrics['test_Loss'] for metrics in metrics_list]
+    train_acc1 = [metrics['train_Acc@1'] for metrics in metrics_list]
+    test_acc1 = [metrics['test_Acc@1'] for metrics in metrics_list]
+    train_acc5 = [metrics['train_Acc@5'] for metrics in metrics_list]
+    test_acc5 = [metrics['test_Acc@5'] for metrics in metrics_list]
+
+    # ---- Plot ----
+    plt.figure(figsize=(12, 5))
+
+    # Loss subplot
+    ax1 = plt.subplot(1, 2, 1)
+    ax1.plot(epochs, train_loss, marker='o', label="Train Loss")
+    ax1.plot(epochs, test_loss, marker='o', label="Test Loss")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax1.set_title("Training & Testing Loss")
+    ax1.legend()
+    ax1.grid(True)
+    ax1.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    # Accuracy subplot
+    ax2 = plt.subplot(1, 2, 2)
+    ax2.plot(epochs, train_acc1, marker='o', label="Train Top-1")
+    ax2.plot(epochs, train_acc5, marker='o', label="Train Top-5")
+    ax2.plot(epochs, test_acc1, marker='o', label="Test Top-1")
+    ax2.plot(epochs, test_acc5, marker='o', label="Test Top-5")
+
+    # Formatter to show % symbol
+    percent_fmt = FuncFormatter(lambda y, _: f"{y:.1%}")
+    ax2.yaxis.set_major_formatter(percent_fmt)  # show as %
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Accuracy (%)")
+    ax2.set_title("Training & Testing Accuracy")
+    ax2.legend()
+    ax2.grid(True)
+    # x integer ticks
+    ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    plt.suptitle(title, fontsize=16)
+
+    plt.tight_layout()
+    plt.show()
 
 
 class GaussianBlur:
@@ -554,13 +650,13 @@ def model_size_bytes(model):
     return sum(p.numel() * p.element_size() for p in model.parameters())
 
 
-def test_model_size(multigpu,
-                    num_classes,
-                    queue_size,
-                    momentum,
-                    temperature,
-                    enable_batch_shuffle):
+def test_model_size(config, multigpu, num_classes):
     model_types = ["resnet50", "ResNet", "TinyCNN"]
+
+    queue_size = config.moco_queue_size,
+    momentum = config.moco_momentum,
+    temperature = config.moco_temperature,
+    enable_batch_shuffle = config.moco_enable_batch_shuffle
 
     for model_type in model_types:
         moco_model = create_moco(multigpu,
@@ -974,20 +1070,25 @@ def run_pretrain(rank,
 
     pbar = tqdm(range(epochs))
 
+    metrics_list = []
+
     if multigpu:
-        pbar.set_description(f"[GPU {rank}]")
+        description = f"[GPU {rank}]"
     elif single_gpu:
-        pbar.set_description(f"[GPU]")
+        description = f"[GPU]"
+    else:
+        description = f"[CPU]"
+
+    pbar.set_description(description)
 
     for epoch in pbar:
-        pretrain_one_epoch(epoch,
-                           epochs,
-                           moco_model,
-                           pretrain_dataloader,
-                           optimizer,
-                           criterion,
-                           pbar)
-
+        pretrain_meters = pretrain_one_epoch(epoch,
+                                             epochs,
+                                             moco_model,
+                                             pretrain_dataloader,
+                                             optimizer,
+                                             criterion,
+                                             pbar)
         tqdm.write("")
 
         if (((multigpu and rank == 0) or not multigpu)
@@ -1001,9 +1102,17 @@ def run_pretrain(rank,
                           optimizer,
                           snapshot_path)
 
+        metrics = OrderedDict()
+        for metric_name, metric_obj in pretrain_meters.items():
+            metrics[f"pretrain_{metric_name}"] = metric_obj.avg
+
+        metrics_list.append(metrics)
+
     if multigpu:
         destroy_process_group()
 
+    plot_pretrain_metrics(metrics_list, f"{description} Metrics During Pretrain")
+    return metrics_list
 
 def launch_train(config, device_type, num_classes):
     multigpu = device_type == "gpu" and config.finetune_multigpu
@@ -1051,6 +1160,8 @@ def launch_train(config, device_type, num_classes):
 
     pbar = tqdm(range(epochs))
 
+    metrics_list = []
+
     for epoch in pbar:
         train_meters = train_one_epoch(epoch,
                                        epochs,
@@ -1083,8 +1194,18 @@ def launch_train(config, device_type, num_classes):
                                      test_dataloader,
                                      criterion,
                                      pbar)
-
         tqdm.write("")
+
+        metrics = OrderedDict()
+        for metric_name, metric_obj in train_meters.items():
+            metrics[f"train_{metric_name}"] = metric_obj.avg
+
+        for metric_name, metric_obj in test_meters.items():
+            metrics[f"test_{metric_name}"] = metric_obj.avg
+
+        metrics_list.append(metrics)
+
+    return metrics_list
 
 
 def launch_finetune(config, device_type, num_classes):
@@ -1119,10 +1240,10 @@ def launch_finetune(config, device_type, num_classes):
     moco_model_state_dict = load_snapshot(pretrain_snapshot_path, device)
 
     model = create_init_encoder(moco_model_state_dict,
-                           model_type,
-                           device,
-                           num_classes,
-                           freeze_layers)
+                                model_type,
+                                device,
+                                num_classes,
+                                freeze_layers)
     test_model = create_init_encoder(None,
                                 model_type,
                                 device,
@@ -1136,14 +1257,16 @@ def launch_finetune(config, device_type, num_classes):
 
     pbar = tqdm(range(epochs))
 
+    metrics_list = []
+
     for epoch in pbar:
-        train_one_epoch(epoch,
-                        epochs,
-                        model,
-                        finetune_dataloader,
-                        optimizer,
-                        criterion,
-                        pbar)
+        train_meters = train_one_epoch(epoch,
+                                       epochs,
+                                       model,
+                                       finetune_dataloader,
+                                       optimizer,
+                                       criterion,
+                                       pbar)
 
         tqdm.write("")
 
@@ -1169,6 +1292,17 @@ def launch_finetune(config, device_type, num_classes):
                                      pbar)
 
         tqdm.write("")
+
+        metrics = OrderedDict()
+        for metric_name, metric_obj in train_meters.items():
+            metrics[f"train_{metric_name}"] = metric_obj.avg
+
+        for metric_name, metric_obj in test_meters.items():
+            metrics[f"test_{metric_name}"] = metric_obj.avg
+
+        metrics_list.append(metrics)
+
+    return metrics_list
 
 
 @torch.no_grad()

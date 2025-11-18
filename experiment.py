@@ -18,7 +18,8 @@ from mwe_moco import (
     run_pretrain,
     launch_train,
     launch_finetune,
-    test_model_size
+    test_model_size,
+    plot_metrics
 )
 
 
@@ -65,7 +66,7 @@ config_dict = dict(
     pretrain_learning_rate = 0.01,
     pretrain_optim_momentum = 0.9,
     save_every = 1,
-    pretrain_snapshot_path = "moco_weights.pth",
+    pretrain_snapshot_path = "pretrain_weights.pth",
 
     # Train
     train_epochs = 5,
@@ -101,7 +102,8 @@ num_classes = len(class_names)
 
 # Train
 device_type = "gpu"
-launch_train(config, device_type, num_classes)
+train_metrics_list = launch_train(config, device_type, num_classes)
+plot_metrics(train_metrics_list, "Metrics During Train")
 
 # Pretrain
 device_type = "gpu"
@@ -111,11 +113,13 @@ launch_pretrain(config,
 
 # Finetune
 device_type = "gpu"
-launch_finetune(config, device_type, num_classes)
+finetune_metrics_list = launch_finetune(config, device_type, num_classes)
+plot_metrics(finetune_metrics_list, "Metrics During Finetune")
 
 # No Batch Shuffle Pretrain
 config.moco_enable_batch_shuffle = False
 device_type = "gpu"
+config.pretrain_snapshot_path = "pretrain_weights_no_batch_shuffle.pth"
 launch_pretrain(config,
                 device_type,
                 num_classes)
@@ -123,7 +127,9 @@ launch_pretrain(config,
 # No Batch Shuffle Finetune
 config.moco_enable_batch_shuffle = False
 device_type = "gpu"
-launch_finetune(config, device_type, num_classes)
+config.finetune_snapshot_path = "finetune_weights_no_batch_shuffle.pth"
+finetune_metrics_list = launch_finetune(config, device_type, num_classes)
+plot_metrics(finetune_metrics_list, "Metrics During Finetune with no Batch Shuffle")
 
 config.moco_enable_batch_shuffle = True
 
@@ -133,7 +139,7 @@ device_type = "cpu"
 # config.batch_size = 128
 # config.moco_queue_size = batch_size * 1
 # config.pretrain_epochs = 5
-config.pretrain_snapshot_path = "train_weights_cpu.pth"
+config.pretrain_snapshot_path = "pretrain_weights_cpu.pth"
 launch_pretrain(config,
                 device_type,
                 num_classes)
@@ -141,20 +147,16 @@ launch_pretrain(config,
 # MWE CPU Finetune
 config.model_type = "TinyCNN"
 device_type = "cpu"
-config.finetune_snapshot_path = "train_weights_cpu.pth"
+config.finetune_snapshot_path = "finetune_weights_cpu.pth"
 # config.finetune_epochs = 5
-launch_finetune(config, device_type, num_classes)
+finetune_metrics_list = launch_finetune(config, device_type, num_classes)
+plot_metrics(finetune_metrics_list, "Metrics During MWE Finetune")
 
 config.model_type = "resnet50"
 
 # Moco Model Size
 multigpu =False
-test_model_size(multigpu,
-                num_classes,
-                config.moco_queue_size,
-                config.moco_momentum,
-                config.moco_temperature,
-                config.moco_enable_batch_shuffle)
+test_model_size(config, multigpu, num_classes)
 
 print("Finished!")
 
