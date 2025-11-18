@@ -339,6 +339,7 @@ class MWEMoco(nn.Module):
         self.queue_size = queue_size
         self.momentum = momentum
         self.temperature = temperature
+        self.enable_batch_shuffle = enable_batch_shuffle
 
         # create the encoders
         # num_classes is the output fc dimension
@@ -1051,13 +1052,13 @@ def launch_train(config, device_type, num_classes):
     pbar = tqdm(range(epochs))
 
     for epoch in pbar:
-        train_one_epoch(epoch,
-                        epochs,
-                        model,
-                        finetune_dataloader,
-                        optimizer,
-                        criterion,
-                        pbar)
+        train_meters = train_one_epoch(epoch,
+                                       epochs,
+                                       model,
+                                       finetune_dataloader,
+                                       optimizer,
+                                       criterion,
+                                       pbar)
 
         tqdm.write("")
 
