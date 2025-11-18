@@ -1112,7 +1112,7 @@ def run_pretrain(rank,
     if multigpu:
         destroy_process_group()
 
-    plot_pretrain_metrics(metrics_list, f"{pretrain_type} {description} Metrics During Pretrain")
+    plot_pretrain_metrics(metrics_list, f"{description} Metrics During {pretrain_type}")
     return metrics_list
 
 def launch_train(config, device_type, num_classes):
