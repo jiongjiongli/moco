@@ -1020,6 +1020,7 @@ def test_one_epoch(epoch,
 def run_pretrain(rank,
                  world_size,
                  config,
+                 pretrain_type,
                  device_type,
                  num_classes):
     multigpu = device_type == "gpu" and world_size > 1
@@ -1111,7 +1112,7 @@ def run_pretrain(rank,
     if multigpu:
         destroy_process_group()
 
-    plot_pretrain_metrics(metrics_list, f"{description} Metrics During Pretrain")
+    plot_pretrain_metrics(metrics_list, f"{pretrain_type} {description} Metrics During Pretrain")
     return metrics_list
 
 def launch_train(config, device_type, num_classes):

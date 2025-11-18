@@ -24,6 +24,7 @@ from mwe_moco import (
 
 
 def launch_pretrain(config,
+                    pretrain_type,
                     device_type,
                     num_classes):
     world_size = torch.cuda.device_count()
@@ -35,6 +36,7 @@ def launch_pretrain(config,
         mp.spawn(run_pretrain,
                  args=(world_size,
                        config,
+                       pretrain_type,
                        device_type,
                        num_classes),
                  nprocs=world_size)
@@ -42,6 +44,7 @@ def launch_pretrain(config,
         run_pretrain(rank,
                      world_size,
                      config,
+                     pretrain_type,
                      device_type,
                      num_classes)
 
@@ -107,7 +110,9 @@ plot_metrics(train_metrics_list, "Metrics During Train")
 
 # Pretrain
 device_type = "gpu"
+pretrain_type = "Pretrain"
 launch_pretrain(config,
+                pretrain_type,
                 device_type,
                 num_classes)
 
@@ -119,8 +124,10 @@ plot_metrics(finetune_metrics_list, "Metrics During Finetune")
 # No Batch Shuffle Pretrain
 config.moco_enable_batch_shuffle = False
 device_type = "gpu"
+pretrain_type = "No Batch Shuffle Pretrain"
 config.pretrain_snapshot_path = "pretrain_weights_no_batch_shuffle.pth"
 launch_pretrain(config,
+                pretrain_type,
                 device_type,
                 num_classes)
 
@@ -136,11 +143,13 @@ config.moco_enable_batch_shuffle = True
 # MWE CPU Pretrain
 config.model_type = "TinyCNN"
 device_type = "cpu"
+pretrain_type = "MWE Pretrain"
 # config.batch_size = 128
 # config.moco_queue_size = batch_size * 1
 # config.pretrain_epochs = 5
 config.pretrain_snapshot_path = "pretrain_weights_cpu.pth"
 launch_pretrain(config,
+                pretrain_type,
                 device_type,
                 num_classes)
 
