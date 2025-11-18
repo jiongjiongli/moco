@@ -261,30 +261,67 @@ class ResNet(nn.Module):
 
         return x
 
+class TinyCNN(nn.Module):
+    def __init__(
+        self,
+        num_classes: int = 10,
+        norm_layer = None,
+    ) -> None:
+        super(TinyCNN, self).__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        self._norm_layer = norm_layer
 
-def create_resnet_model(model_type, num_classes):
+        self.inplanes = 16
+        self.conv1 = nn.Conv2d(3,
+                               self.inplanes,
+                               kernel_size=3,
+                               stride=1,
+                               padding=1,
+                               bias=False)
+        self.bn1 = norm_layer(self.inplanes)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(self.inplanes, num_classes)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+def create_encoder(model_type, num_classes):
     if model_type == "resnet50":
-        resnet_model = resnet50(num_classes=num_classes)
-
-    else:
-        resnet_model = ResNet(BasicBlock,
+        model = resnet50(num_classes=num_classes)
+    elif model_type == "ResNet":
+        model = ResNet(BasicBlock,
                               [2, 2, 2, 2],
                               num_classes=num_classes,
                               norm_layer=nn.BatchNorm2d,
                               # norm_layer=nn.InstanceNorm2d
                               )
+    else:
+        assert model_type == "TinyCNN", model_type
+        model = TinyCNN(num_classes)
 
-    return resnet_model
+    return model
 
 
 
 class MWEMoco(nn.Module):
     def __init__(self,
                  encoder,
+                 multigpu,
                  feature_dim: int = 10,
                  queue_size: int = 65536,
                  momentum: float = 0.999,
-                 temperature: float = 0.07
+                 temperature: float = 0.07,
+                 enable_batch_shuffle=True,
                  ):
         """
         Arguments:
@@ -297,7 +334,7 @@ class MWEMoco(nn.Module):
         super(MWEMoco, self).__init__()
 
         world_size = torch.cuda.device_count()
-        self.multigpu = world_size > 1
+        self.multigpu = multigpu
 
         self.queue_size = queue_size
         self.momentum = momentum
@@ -336,10 +373,16 @@ class MWEMoco(nn.Module):
         with torch.no_grad():  # no gradient to keys
             self._momentum_update_key_encoder()  # update the key encoder
 
-            im_k, idx_unshuffle = self.batch_shuffle(im_k)
+            if self.enable_batch_shuffle:
+                im_k, idx_unshuffle = self.batch_shuffle(im_k)
+            else:
+                idx_unshuffle = None
+
             k = self.encoder_k(im_k)
             k = nn.functional.normalize(k, dim=1)
-            k = self.batch_unshuffle(k, idx_unshuffle)
+
+            if self.enable_batch_shuffle:
+                k = self.batch_unshuffle(k, idx_unshuffle)
 
         # compute logits
         # Einstein sum is more intuitive
@@ -454,12 +497,12 @@ class MWEMoco(nn.Module):
         self.queue_head_idx[0] = queue_head_idx
 
 
-def create_encoder(moco_model_state_dict,
+def create_init_encoder(moco_model_state_dict,
                    model_type,
                    device,
                    num_classes,
                    freeze_layers):
-    model = create_resnet_model(model_type, num_classes).to(device)
+    model = create_encoder(model_type, num_classes).to(device)
 
     linear_weight_names = ["fc.weight", "fc.bias"]
 
@@ -486,6 +529,53 @@ def create_encoder(moco_model_state_dict,
         assert set(msg.missing_keys) == set(linear_weight_names)
 
     return model
+
+
+def create_moco(multigpu,
+                model_type,
+                num_classes,
+                queue_size,
+                momentum,
+                temperature,
+                enable_batch_shuffle):
+    moco_model = MWEMoco(lambda num_classes: create_encoder(model_type, num_classes),
+                         multigpu=multigpu,
+                         feature_dim=num_classes,
+                         queue_size=queue_size,
+                         momentum=momentum,
+                         temperature=temperature,
+                         enable_batch_shuffle=enable_batch_shuffle)
+
+    return moco_model
+
+
+def model_size_bytes(model):
+    return sum(p.numel() * p.element_size() for p in model.parameters())
+
+
+def test_model_size(multigpu,
+                    num_classes,
+                    queue_size,
+                    momentum,
+                    temperature,
+                    enable_batch_shuffle):
+    model_types = ["resnet50", "ResNet", "TinyCNN"]
+
+    for model_type in model_types:
+        moco_model = create_moco(multigpu,
+                                 model_type,
+                                 num_classes,
+                                 queue_size,
+                                 momentum,
+                                 temperature,
+                                 enable_batch_shuffle)
+
+        size_bytes = model_size_bytes(moco_model)
+
+        if size_bytes < 1e6:
+            print(f"{model_type} Model size: {size_bytes / 1e3:.2f} KB")
+        else:
+            print(f"{model_type} Model size: {size_bytes / 1e6:.2f} MB")
 
 
 class DataManager:
@@ -839,7 +929,10 @@ def run_pretrain(rank,
     single_gpu = device_type == "gpu" and torch.cuda.is_available()
 
     model_type = config.model_type
-    queue_size = config.queue_size
+    queue_size = config.moco_queue_size
+    momentum = config.moco_momentum
+    temperature = config.moco_temperature
+    enable_batch_shuffle = config.moco_enable_batch_shuffle
 
     epochs = config.pretrain_epochs
     learning_rate = config.pretrain_learning_rate
@@ -854,12 +947,14 @@ def run_pretrain(rank,
 
     pretrain_data = DataManager.create_pretrain_data(config, multigpu)
     pretrain_dataloader = pretrain_data["dataloader"]
-    # moco_model = MWEMoco(create_resnet_model,
-    #                      feature_dim=num_classes,
-    #                      queue_size=queue_size)
-    moco_model = MWEMoco(lambda num_classes: create_resnet_model(model_type, num_classes),
-                         feature_dim=num_classes,
-                         queue_size=queue_size)
+
+    moco_model = create_moco(multigpu,
+                             model_type,
+                             num_classes,
+                             queue_size,
+                             momentum,
+                             temperature,
+                             enable_batch_shuffle)
 
     if multigpu:
         moco_model = moco_model.to(rank)
@@ -937,12 +1032,12 @@ def launch_train(config, device_type, num_classes):
     test_dataset = test_data["dataset"]
     test_dataloader = test_data["dataloader"]
 
-    model = create_encoder(None,
+    model = create_init_encoder(None,
                            model_type,
                            device,
                            num_classes,
                            freeze_layers)
-    test_model = create_encoder(None,
+    test_model = create_init_encoder(None,
                                 model_type,
                                 device,
                                 num_classes,
@@ -1002,6 +1097,7 @@ def launch_finetune(config, device_type, num_classes):
     learning_rate = config.finetune_learning_rate
     optim_momentum = config.finetune_optim_momentum
     snapshot_path = config.finetune_snapshot_path
+    pretrain_snapshot_path = config.pretrain_snapshot_path
 
     assert not multigpu, multigpu
     if single_gpu:
@@ -1015,20 +1111,18 @@ def launch_finetune(config, device_type, num_classes):
     finetune_dataset = finetune_data["dataset"]
     finetune_dataloader = finetune_data["dataloader"]
 
-    test_data = DataManager.create_test_data(data_root_path,
-                                   batch_size,
-                                   num_workers)
+    test_data = DataManager.create_test_data(config)
     test_dataset = test_data["dataset"]
     test_dataloader = test_data["dataloader"]
 
-    moco_model_state_dict = load_snapshot(moco_snapshot_path, device)
+    moco_model_state_dict = load_snapshot(pretrain_snapshot_path, device)
 
-    model = create_encoder(moco_model_state_dict,
+    model = create_init_encoder(moco_model_state_dict,
                            model_type,
                            device,
                            num_classes,
                            freeze_layers)
-    test_model = create_encoder(None,
+    test_model = create_init_encoder(None,
                                 model_type,
                                 device,
                                 num_classes,

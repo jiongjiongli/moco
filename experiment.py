@@ -17,7 +17,8 @@ from mwe_moco import (
     DataManager,
     run_pretrain,
     launch_train,
-    launch_finetune
+    launch_finetune,
+    test_model_size
 )
 
 
@@ -25,7 +26,7 @@ def launch_pretrain(config,
                     device_type,
                     num_classes):
     world_size = torch.cuda.device_count()
-    print(f"world_size: {world_size}")
+    # print(f"world_size: {world_size}")
     multigpu = device_type == "gpu" and world_size > 1
     rank = 0 if multigpu else -1
 
@@ -56,9 +57,11 @@ config_dict = dict(
     num_workers = 2,
 
     # Pretrain
-    queue_size = batch_size * 100,
+    moco_queue_size = batch_size * 100,
+    moco_momentum = 0.999,
+    moco_temperature = 0.07,
+    moco_enable_batch_shuffle = True,
     pretrain_epochs = 5,
-    # device_type = "gpu",
     pretrain_learning_rate = 0.01,
     pretrain_optim_momentum = 0.9,
     save_every = 1,
@@ -110,22 +113,51 @@ launch_pretrain(config,
 device_type = "gpu"
 launch_finetune(config, device_type, num_classes)
 
-print("Finished!")
-
-
-# Pretrain
-device_type = "cpu"
-config.batch_size = 1
-config.queue_size = batch_size * 1
+# No Batch Shuffle Pretrain
+config.moco_enable_batch_shuffle = False
+device_type = "gpu"
 launch_pretrain(config,
                 device_type,
                 num_classes)
 
-# Finetune
-device_type = "cpu"
+# No Batch Shuffle Finetune
+config.moco_enable_batch_shuffle = False
+device_type = "gpu"
 launch_finetune(config, device_type, num_classes)
 
+config.moco_enable_batch_shuffle = True
+
+# MWE CPU Pretrain
+config.model_type = "TinyCNN"
+device_type = "cpu"
+# config.batch_size = 128
+# config.moco_queue_size = batch_size * 1
+# config.pretrain_epochs = 5
+config.pretrain_snapshot_path = "train_weights_cpu.pth"
+launch_pretrain(config,
+                device_type,
+                num_classes)
+
+# MWE CPU Finetune
+config.model_type = "TinyCNN"
+device_type = "cpu"
+config.finetune_snapshot_path = "train_weights_cpu.pth"
+# config.finetune_epochs = 5
+launch_finetune(config, device_type, num_classes)
+
+config.model_type = "resnet50"
+
+# Moco Model Size
+multigpu =False
+test_model_size(multigpu,
+                num_classes,
+                config.moco_queue_size,
+                config.moco_momentum,
+                config.moco_temperature,
+                config.moco_enable_batch_shuffle)
+
 print("Finished!")
+
 
 # acc_infos_list = []
 
