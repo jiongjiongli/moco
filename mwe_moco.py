@@ -653,9 +653,9 @@ def model_size_bytes(model):
 def test_model_size(config, multigpu, num_classes):
     model_types = ["resnet50", "ResNet", "TinyCNN"]
 
-    queue_size = config.moco_queue_size,
-    momentum = config.moco_momentum,
-    temperature = config.moco_temperature,
+    queue_size = config.moco_queue_size
+    momentum = config.moco_momentum
+    temperature = config.moco_temperature
     enable_batch_shuffle = config.moco_enable_batch_shuffle
 
     for model_type in model_types:
@@ -670,9 +670,9 @@ def test_model_size(config, multigpu, num_classes):
         size_bytes = model_size_bytes(moco_model)
 
         if size_bytes < 1e6:
-            print(f"{model_type} Model size: {size_bytes / 1e3:.2f} KB")
+            print(f"Moco with Encoder {model_type} Model size: {size_bytes / 1e3:.2f} KB")
         else:
-            print(f"{model_type} Model size: {size_bytes / 1e6:.2f} MB")
+            print(f"Moco with Encoder {model_type} Model size: {size_bytes / 1e6:.2f} MB")
 
 
 class DataManager:
