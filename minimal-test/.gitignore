@@ -1,3 +1,38 @@
-venv
-.ipynb_checkpoints
+# virtual environment
+venv/
+env/
+ENV/
+.venv/
+
+# jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# data
+data/
+*.pth
+*.pt
+*.ckpt
+
+# ide
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# os
+.DS_Store
+Thumbs.db
 data
